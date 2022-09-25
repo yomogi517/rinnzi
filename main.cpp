@@ -231,6 +231,8 @@ int main(){
 */
         if(button_sankaku){
             Air = 1;
+        }else{
+            Air = 0;
         }
 
 /*        //足回り静止
