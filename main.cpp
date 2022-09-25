@@ -2,6 +2,10 @@
 #include "PS3.h"
 #include "mbed_wait_api.h"
 #include "QEI.h"
+#include "PIDcontroller.h"
+
+#define Kp 40000.0
+#define Ti 
 
 #define ADDRESS_MIGI_UE 0x14
 #define ADDRESS_MIGI_SITA 0x22
