@@ -235,10 +235,20 @@ int main(){
             send(ADDRESS_ROLLER, 0x80);
         }
 */
+        //エアシリンダー
         if(button_sankaku){
             Air = 1;
         }else{
             Air = 0;
+        }
+
+        //装填機構
+        if(ps3.getButtonState(PS3::sikaku)){
+            send(ADDRESS_RACKandPINION, 0x95);  //正転
+            
+        }
+        if(ps3.getButtonState(PS3::batu)){
+            send(ADDRESS_RACKandPINION, 0x65);  //逆転
         }
 
 /*        //足回り静止
