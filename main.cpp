@@ -4,16 +4,13 @@
 #include "QEI.h"
 #include "PIDcontroller.h"
 
-#define Kp 40000.0
-#define Ti 
-
 #define ADDRESS_MIGI_UE 0x14
 #define ADDRESS_MIGI_SITA 0x22
 #define ADDRESS_HIDARI_UE 0x40
 #define ADDRESS_HIDARI_SITA 0x30
 
 #define ADDRESS_ROLLER 0x60
-#define ADDRESS_RACKandPINION 0x18
+#define ADDRESS_RACKandPINION 0x16
 
 #define ADDRESS_ANGLECHANGE_VERTICAL 0x00
 #define ADDRESS_ANGLECHANGE_HORIZONTAL 0x10
@@ -23,7 +20,9 @@ PS3 ps3 (A0,A1);
 DigitalOut sig(D13);
 DigitalOut Air(PC_8);
 
-QEI encoder( D2, D3, NC, 2048, QEI::X2_ENCODING);
+PID roller(50.0 , 15.0, 30.0 , 0.050);
+
+QEI encoder_roller( PC_11, PD_2, NC, 2048, QEI::X2_ENCODING);
 Ticker flip;
 
 void send(char add,char data);
@@ -32,6 +31,7 @@ void get_data(void);
 char move_value(double value);
 void get_rpm();
 void get_angle();
+int roller_PID(float target_rpm);
 
 
 int Ry;            //ジョイコン　右　y軸
@@ -56,13 +56,15 @@ char motordata_asimawari;
 char motordata_anglechange_horizontal;
 
 int pulse;
-double rpm;
+double true_rpm;
 double angle;
 
-void get_rpm();
-void get_angle();
+char roller_data;
+char true_roller_data;
 
 int main(){
+
+    sig = 0;
 
     bool moved_asimawari;
     bool moved_anglechange_horizontal;
@@ -71,7 +73,7 @@ int main(){
     char forward = 0xa0;
     char data = 0x80;
 
-    encoder.reset();
+    encoder_roller.reset();
     flip.attach(&get_rpm,50ms);
 
     while (true) {
@@ -88,7 +90,7 @@ int main(){
 
         get_data();
         //printf("m:%d L:%d R:%d Lx%d Ly%d\n",button_maru,L1,R1,Lx,Ly);
-        printf("%5.2lf[rpm] pulse:%6.0d \n",rpm,pulse);
+        printf("pulse:%6.0d motordata: %3.0d %5.2lf[rpm]  \n", pulse, true_roller_data, true_rpm);
 
         moved_asimawari = 0;
         moved_anglechange_horizontal = 0;
@@ -179,16 +181,16 @@ int main(){
             send(ADDRESS_MIGI_SITA,0x80);
         }
 
-        if(button_sikaku){
-            data -= 1;
-        }
-        if(button_batu){
-            data += 1;
-        }
-          if(button_maru){
-            send(ADDRESS_ROLLER, data);
+        //PID制御で射出機構のモーターの回転数維持
+        if(ps3.getButtonState(PS3::maru)){
+            roller_PID(2500.0);
+            send(ADDRESS_ROLLER, true_roller_data);
+            //send(0x30, true_roller_data);
+            //send(0x24, true_roller_data);
         }else{
             send(ADDRESS_ROLLER, 0x80);
+            //send(0x30, 0x80);
+            //send(0x24, 0x80);
         }
 
 
@@ -270,6 +272,7 @@ void get_data(void){
     R2 = ps3.getButtonState(PS3::R2);
 
     button_maru = ps3.getButtonState(PS3::maru);
+    button_sankaku = ps3.getButtonState(PS3::sankaku);
 
     //スティックの座標取得
     Ry = ps3.getRightJoystickYaxis();
@@ -324,12 +327,38 @@ char move_value(double value){
 }
 
 void get_rpm(){
-    pulse = encoder.getPulses();
-    encoder.reset();
-    rpm = (60*20*(double)pulse) / (2048*2) ;
+    pulse = encoder_roller.getPulses();
+    encoder_roller.reset();
+    true_rpm = (60*20*(double)pulse) / (2048*2) ;
 }
 
 void get_angle(){
-    pulse = encoder.getPulses();
+    pulse = encoder_roller.getPulses();
     angle = (360*(double)pulse)/(2048*2);
+}
+
+int roller_PID(float target_rpm){
+
+    //入力値（rpm）の範囲定義
+    roller.setInputLimits(-5000.0,5000.0);
+
+    if(true_rpm <= target_rpm){
+        roller.setOutputLimits(0x84, 0xff);
+    }else if(true_rpm > target_rpm){
+        roller.setOutputLimits(0x00, 0x7B);
+    }
+
+    roller.setSetPoint(target_rpm);//目標値設定
+
+    roller.setProcessValue(true_rpm);//現在の値（rpm）
+
+    roller_data = roller.compute();
+
+    if(true_rpm <= target_rpm){
+        true_roller_data = roller_data;
+    }else if(true_rpm > target_rpm){
+        true_roller_data = 0x7b - roller_data;
+    }
+
+    return 0;
 }
