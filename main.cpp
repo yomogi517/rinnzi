@@ -10,7 +10,7 @@
 #define ADDRESS_HIDARI_SITA 0x30
 
 #define ADDRESS_ROLLER 0x60
-#define ADDRESS_RACKandPINION 0x16
+#define ADDRESS_CHANGE_CARTRIDGE 0x16
 
 #define ADDRESS_ANGLECHANGE_VERTICAL 0x00
 #define ADDRESS_ANGLECHANGE_HORIZONTAL 0x10
@@ -20,19 +20,23 @@ PS3 ps3 (A0,A1);
 DigitalOut sig(D13);
 DigitalOut Air(PC_8);
 
-PID roller(50.0 , 15.0, 30.0 , 0.050);
+PID roller          (  1.0,  0.001,  10.0, 0.050);
+PID change_cartridge(  0.5,  0.0,  0.0, 0.100);
 
-QEI encoder_roller( PC_11, PD_2, NC, 2048, QEI::X2_ENCODING);
+QEI encoder_roller          ( PC_11, PD_2, NC, 2048, QEI::X2_ENCODING);
+QEI encoder_change_cartridge(    D2,   D3, NC, 2048, QEI::X2_ENCODING);
 Ticker flip;
+
+Timer change_cartridge_time;
 
 void send(char add,char data);
 void send_asimawari(char d_mu, char d_ms, char d_hs, char d_hu);
 void get_data(void);
 char move_value(double value);
-void get_rpm();
-void get_angle();
-int roller_PID(float target_rpm);
-
+void roller_get_rpm();
+void change_cartridge_get_angle();
+int roller_PID(float target_roller_rpm);
+int change_cartridge_PID(float target_change_cartridge_angle);
 
 int Ry;            //ジョイコン　右　y軸
 int Rx;            //ジョイコン　右　x軸
@@ -55,16 +59,28 @@ bool button_batu;    // ✕
 char motordata_asimawari;
 char motordata_anglechange_horizontal;
 
-int pulse;
-double true_rpm;
-double angle;
+int pulse_roller;
+double true_roller_rpm;
+
+int pulse_change_cartridge;
+double true_change_cartridge_angle;
+
+int num_change_cartridge;   //装填機構のための変数
 
 char roller_data;
 char true_roller_data;
 
+char change_cartridge_data;
+char true_change_cartridge_data;
+
+double roller_target_rpm;
+double average_scan_rpm;
+
 int main(){
 
+    num_change_cartridge = 0;
     sig = 0;
+    Air = 0;
 
     bool moved_asimawari;
     bool moved_anglechange_horizontal;
@@ -73,12 +89,13 @@ int main(){
     char forward = 0xa0;
     char data = 0x80;
 
+    //float time; //装填機構用
+
     encoder_roller.reset();
-    flip.attach(&get_rpm,50ms);
+    encoder_change_cartridge.reset();
+    flip.attach(&roller_get_rpm,50ms);
 
     while (true) {
-        Air = 0;
-
         //緊急停止
         if(ps3.getSELECTState()){
             sig = 1;
@@ -89,8 +106,9 @@ int main(){
         }
 
         get_data();
-        //printf("m:%d L:%d R:%d Lx%d Ly%d\n",button_maru,L1,R1,Lx,Ly);
-        printf("pulse:%6.0d motordata: %3.0d %5.2lf[rpm]  \n", pulse, true_roller_data, true_rpm);
+
+        //printf("pulse_roller:%6.0d motordata: %3.0d %5.2lf[rpm]　cart_angle:%4.1lf time:%04.1f cart_motordata:%3.0d\n",pulse_roller, true_roller_data, true_roller_rpm, true_change_cartridge_angle, change_cartridge_time.read(), true_change_cartridge_data);
+        //printf("pulse_roller:%6.0d motordata: %3.0d %5.0lf[rpm]  \n", pulse_roller, true_roller_data, true_roller_rpm);
 
         moved_asimawari = 0;
         moved_anglechange_horizontal = 0;
@@ -181,16 +199,15 @@ int main(){
             send(ADDRESS_MIGI_SITA,0x80);
         }
 
+
+        send(ADDRESS_ROLLER, true_roller_data);
         //PID制御で射出機構のモーターの回転数維持
         if(ps3.getButtonState(PS3::maru)){
-            roller_PID(2500.0);
-            send(ADDRESS_ROLLER, true_roller_data);
-            //send(0x30, true_roller_data);
-            //send(0x24, true_roller_data);
+            roller_target_rpm = 3000.0;
+            printf("pulse_roller:%6.0d motordata: %3.0d %5.0lf[rpm]  \n", pulse_roller, true_roller_data, true_roller_rpm);
         }else{
-            send(ADDRESS_ROLLER, 0x80);
-            //send(0x30, 0x80);
-            //send(0x24, 0x80);
+            roller_target_rpm = 0.0;
+            //send(ADDRESS_ROLLER, 0x80);
         }
 
 
@@ -221,20 +238,6 @@ int main(){
             moved_anglechange_horizontal = 1;
         }
 
-/*        if(button_maru){
-            if(rpm>2500){
-                send(ADDRESS_ROLLER, 0x5c);
-            }else if(rpm<1000){
-                send(ADDRESS_ROLLER, 0x5e);
-            }else if(rpm<=2000){
-                send(ADDRESS_ROLLER, 0x30);
-            }else if(rpm<=2500){
-                send(ADDRESS_ROLLER, 0x40);
-            }
-        }else{
-            send(ADDRESS_ROLLER, 0x80);
-        }
-*/
         //エアシリンダー
         if(button_sankaku){
             Air = 1;
@@ -242,13 +245,16 @@ int main(){
             Air = 0;
         }
 
-        //装填機構
         if(ps3.getButtonState(PS3::sikaku)){
-            send(ADDRESS_RACKandPINION, 0x95);  //正転
             
-        }
-        if(ps3.getButtonState(PS3::batu)){
-            send(ADDRESS_RACKandPINION, 0x65);  //逆転
+            send(ADDRESS_CHANGE_CARTRIDGE, 0x8c);  //正転
+           
+        }else if(ps3.getButtonState(PS3::batu)){
+
+            send(ADDRESS_CHANGE_CARTRIDGE, 0x73);  
+           
+        }else{
+            send(ADDRESS_CHANGE_CARTRIDGE, 0x80);
         }
 
 /*        //足回り静止
@@ -336,39 +342,67 @@ char move_value(double value){
     return result;
 }
 
-void get_rpm(){
-    pulse = encoder_roller.getPulses();
+void roller_get_rpm(){
+    pulse_roller = encoder_roller.getPulses();
     encoder_roller.reset();
-    true_rpm = (60*20*(double)pulse) / (2048*2) ;
+    true_roller_rpm = (60*20*(double)pulse_roller) / (2048*2) ;
+    average_scan_rpm = average_scan_rpm * (4/5) + true_roller_rpm/5;
+    roller_PID(roller_target_rpm);
+  
 }
 
-void get_angle(){
-    pulse = encoder_roller.getPulses();
-    angle = (360*(double)pulse)/(2048*2);
+void change_cartridge_get_angle(){
+    pulse_change_cartridge = encoder_change_cartridge.getPulses();
+    true_change_cartridge_angle = (360*(double)pulse_change_cartridge)/(2048*2);
 }
 
-int roller_PID(float target_rpm){
+int roller_PID(float target_roller_rpm){
 
     //入力値（rpm）の範囲定義
     roller.setInputLimits(-5000.0,5000.0);
 
-    if(true_rpm <= target_rpm){
+    if(true_roller_rpm <= target_roller_rpm){
         roller.setOutputLimits(0x84, 0xff);
-    }else if(true_rpm > target_rpm){
+    }else if(true_roller_rpm > target_roller_rpm){
         roller.setOutputLimits(0x00, 0x7B);
     }
 
-    roller.setSetPoint(target_rpm);//目標値設定
+    roller.setSetPoint(target_roller_rpm);//目標値設定
 
-    roller.setProcessValue(true_rpm);//現在の値（rpm）
+    roller.setProcessValue(average_scan_rpm);//現在の値（rpm）
 
     roller_data = roller.compute();
 
-    if(true_rpm <= target_rpm){
+    if(true_roller_rpm <= target_roller_rpm){
         true_roller_data = roller_data;
-    }else if(true_rpm > target_rpm){
+    }else if(true_roller_rpm > target_roller_rpm){
         true_roller_data = 0x7b - roller_data;
     }
 
     return 0;
+}
+
+int change_cartridge_PID(float target_change_cartridge_angle){
+    
+    change_cartridge.setInputLimits(-3000.0,3000.0);
+
+    if(true_change_cartridge_angle <= target_change_cartridge_angle){
+        change_cartridge.setOutputLimits(0x84, 0xff);
+    }else if(true_change_cartridge_angle > target_change_cartridge_angle){
+        change_cartridge.setOutputLimits(0x00, 0x7B);
+    }
+
+    change_cartridge.setSetPoint(target_change_cartridge_angle);     //目標値設定
+
+    change_cartridge.setProcessValue(true_change_cartridge_angle);   //現在の値
+
+    change_cartridge_data = change_cartridge.compute();
+
+    if(true_change_cartridge_angle <= target_change_cartridge_angle){
+        true_change_cartridge_data = change_cartridge_data;
+    }else if(true_change_cartridge_angle > target_change_cartridge_angle){
+        true_change_cartridge_data = 0x7b - change_cartridge_data;
+    }
+
+    return 0;                                                                                                                  
 }
