@@ -72,6 +72,7 @@ char true_roller_data;
 
 char change_cartridge_data;
 char true_change_cartridge_data;
+bool changing_now;
 
 double roller_target_rpm;
 double average_scan_rpm;
@@ -85,8 +86,8 @@ int main(){
     bool moved_asimawari;
     bool moved_anglechange_horizontal;
 
-    char back = 0x60;
-    char forward = 0xa0;
+    char back = 0x40; //64　5割くらいの出力
+    char forward = 0xc0; //192 5割ぐらいの出力
     char data = 0x80;
 
     //float time; //装填機構用
@@ -96,6 +97,9 @@ int main(){
     flip.attach(&roller_get_rpm,50ms);
 
     while (true) {
+
+        change_cartridge_get_angle();
+
         //緊急停止
         if(ps3.getSELECTState()){
             sig = 1;
@@ -103,6 +107,8 @@ int main(){
 
         if(ps3.getSTARTState()){
             sig = 0;
+            encoder_change_cartridge.reset();
+            num_change_cartridge = 0;
         }
 
         get_data();
@@ -201,10 +207,13 @@ int main(){
 
 
         send(ADDRESS_ROLLER, true_roller_data);
+
         //PID制御で射出機構のモーターの回転数維持
         if(ps3.getButtonState(PS3::maru)){
             roller_target_rpm = 3000.0;
+
             printf("pulse_roller:%6.0d motordata: %3.0d %5.0lf[rpm]  \n", pulse_roller, true_roller_data, true_roller_rpm);
+            
         }else{
             roller_target_rpm = 0.0;
             //send(ADDRESS_ROLLER, 0x80);
@@ -212,49 +221,79 @@ int main(){
 
 
         //機体左に旋回
-        if(L1 && !moved_asimawari){
+        if(ps3.getButtonState(PS3::L1) && !moved_asimawari){
             motordata_asimawari = forward;
             send_asimawari(motordata_asimawari,motordata_asimawari,motordata_asimawari,motordata_asimawari);
             moved_asimawari = 1;
         }
 
         //機体右に旋回
-        if(R1 && !moved_asimawari){
+        if(ps3.getButtonState(PS3::R1) && !moved_asimawari){
             motordata_asimawari = back;
             send_asimawari(motordata_asimawari,motordata_asimawari,motordata_asimawari,motordata_asimawari);
             moved_asimawari = 1;
         }
         
         //砲台を左に旋回
-        if(L2 && !moved_anglechange_horizontal){
+        if(ps3.getButtonState(PS3::L2) && !moved_anglechange_horizontal){
             motordata_anglechange_horizontal = forward;
             send(ADDRESS_ANGLECHANGE_HORIZONTAL, motordata_anglechange_horizontal);
             moved_anglechange_horizontal = 1;
         }
         //砲台を右に旋回
-        if(R2 && !moved_anglechange_horizontal){
+        if(ps3.getButtonState(PS3::R2) && !moved_anglechange_horizontal){
             motordata_anglechange_horizontal = back;
             send(ADDRESS_ANGLECHANGE_HORIZONTAL, motordata_anglechange_horizontal);
             moved_anglechange_horizontal = 1;
         }
 
         //エアシリンダー
-        if(button_sankaku){
+        if(ps3.getButtonState(PS3::sankaku)){
             Air = 1;
         }else{
             Air = 0;
         }
 
+/*
+        //ロリコンの制御なし
         if(ps3.getButtonState(PS3::sikaku)){
             
-            send(ADDRESS_CHANGE_CARTRIDGE, 0x8c);  //正転
-           
+            send(ADDRESS_CHANGE_CARTRIDGE, 0x9e);  //3割程度
+
         }else if(ps3.getButtonState(PS3::batu)){
 
-            send(ADDRESS_CHANGE_CARTRIDGE, 0x73);  
+            send(ADDRESS_CHANGE_CARTRIDGE, 0x62);  //同じく3割程度
            
         }else{
             send(ADDRESS_CHANGE_CARTRIDGE, 0x80);
+        }
+*/
+
+
+//ロリコンの値からボタンを一回押すごとに戻れる、本番用に書くと×を押したら一番初めに戻るようにしたい。　
+//リミットスイッチを使うらしいので×が押されたらリミットスイッチがオン（１）になるまで逆転。オン（１）になったらロリコンリセット（基準を定めるため）
+//ただ注意として何かの拍子にリミットスイッチが押されて誤作動を起こさないようにプログラムを書こう
+//例えば、Timerを入力と同時に起動し、何秒か後に押されているか確認、その時もオンであればロリコンリセットなどなど
+        if(changing_now){//装填中
+            if((true_change_cartridge_angle <= 1080*num_change_cartridge+50.0) && (true_change_cartridge_angle >= 1080*num_change_cartridge-50.0)){
+                changing_now = 0; //装填完了
+            }else{
+                if( true_change_cartridge_angle < 1080*num_change_cartridge ){
+                    send(ADDRESS_CHANGE_CARTRIDGE, 0x9e);   //正転
+                }else{
+                    send(ADDRESS_CHANGE_CARTRIDGE, 0x62);
+                }
+            }
+        }else{//装填完了時（入力待ち）
+            if(ps3.getButtonState(PS3::sikaku)){
+                num_change_cartridge += 1;
+                changing_now = 1;       //装填開始
+            }else if(ps3.getButtonState(PS3::batu)){
+                num_change_cartridge -= 1;
+                changing_now = 1;       //装填開始
+            }else{
+                send(ADDRESS_CHANGE_CARTRIDGE, 0x80);
+            }
         }
 
 /*        //足回り静止
@@ -346,7 +385,7 @@ void roller_get_rpm(){
     pulse_roller = encoder_roller.getPulses();
     encoder_roller.reset();
     true_roller_rpm = (60*20*(double)pulse_roller) / (2048*2) ;
-    average_scan_rpm = average_scan_rpm * (4/5) + true_roller_rpm/5;
+    average_scan_rpm = average_scan_rpm * (4.0/5.0) + true_roller_rpm/5.0;
     roller_PID(roller_target_rpm);
   
 }
